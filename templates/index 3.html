@@ -1,0 +1,538 @@
+<!DOCTYPE html>
+<html lang="pt-BR">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>UABE Python - Unity Asset Bundle Extractor</title>
+    <script src="https://cdn.tailwindcss.com"></script>
+    <style>
+        body { font-family: 'Segoe UI', system-ui, sans-serif; }
+        .drop-zone.dragover { border-color: #3b82f6 !important; background-color: #eff6ff !important; }
+        .asset-row:hover { background-color: #f8fafc; }
+        .modal-backdrop { background: rgba(0,0,0,0.5); backdrop-filter: blur(2px); }
+        .spinner {
+            border: 3px solid #f3f3f3;
+            border-top: 3px solid #3b82f6;
+            border-radius: 50%;
+            width: 20px; height: 20px;
+            animation: spin 1s linear infinite;
+            display: inline-block; vertical-align: middle;
+        }
+        @keyframes spin { 0% { transform: rotate(0deg); } 100% { transform: rotate(360deg); } }
+        pre.json-view { font-size: 12px; max-height: 500px; overflow: auto; }
+        pre::-webkit-scrollbar { width: 8px; height: 8px; }
+        pre::-webkit-scrollbar-track { background: #1f2937; border-radius: 4px; }
+        pre::-webkit-scrollbar-thumb { background: #4b5563; border-radius: 4px; }
+    </style>
+</head>
+<body class="bg-gray-50 min-h-screen">
+
+    <!-- Header -->
+    <header class="bg-gradient-to-r from-slate-800 to-indigo-900 text-white shadow-lg">
+        <div class="max-w-7xl mx-auto px-4 py-4 flex items-center justify-between flex-wrap gap-3">
+            <div class="flex items-center gap-3">
+                <div class="w-10 h-10 bg-white/20 rounded-lg flex items-center justify-center text-2xl">📦</div>
+                <div>
+                    <h1 class="text-xl font-bold">UABE Python</h1>
+                    <p class="text-blue-200 text-sm">Unity Asset Bundle Extractor (Render Edition)</p>
+                </div>
+            </div>
+            <div class="text-sm bg-green-500/20 text-green-200 px-3 py-1.5 rounded-full flex items-center gap-2">
+                <span class="w-2.5 h-2.5 rounded-full bg-green-400 animate-pulse"></span>
+                Online ✓
+            </div>
+        </div>
+    </header>
+
+    <main class="max-w-7xl mx-auto px-4 py-6">
+
+        <!-- Aviso Free Tier -->
+        <div class="mb-6 bg-blue-50 border border-blue-200 rounded-xl p-4 text-sm text-blue-800">
+            <strong>💡 Dica:</strong> No plano gratuito do Render, a aplicação dorme após 15 minutos sem uso. 
+            O primeiro acesso pode levar ~30 segundos para acordar. Arquivos processados são temporários.
+        </div>
+
+        <!-- Upload Zone -->
+        <section id="uploadSection" class="mb-6">
+            <div id="dropZone" class="drop-zone border-2 border-dashed border-gray-300 rounded-xl p-8 text-center bg-white cursor-pointer transition-all hover:border-blue-400 hover:bg-blue-50">
+                <div class="text-5xl mb-3">⬆️</div>
+                <h2 class="text-lg font-semibold text-gray-700 mb-1">Envie um Asset Bundle Unity</h2>
+                <p class="text-gray-500 text-sm mb-3">Arraste e solte aqui ou clique para selecionar</p>
+                <p class="text-xs text-gray-400">Formatos: .unity3d, .bundle, .assets, .u3dexp</p>
+                <input type="file" id="fileInput" class="hidden" accept=".unity3d,.bundle,.assets,.u3dexp,.bin">
+            </div>
+            <div id="uploadProgress" class="hidden mt-3 text-center text-blue-600">
+                <span class="spinner mr-2"></span>
+                <span class="align-middle">Processando arquivo...</span>
+            </div>
+        </section>
+
+        <!-- Summary -->
+        <section id="summarySection" class="hidden mb-6">
+            <div class="bg-white rounded-xl shadow-sm border border-gray-200 p-5">
+                <div class="flex items-center justify-between mb-4">
+                    <h2 class="text-lg font-semibold text-gray-800">📊 Resumo do Bundle</h2>
+                    <button onclick="unloadFile()" class="text-sm text-red-600 hover:text-red-800 px-3 py-1 rounded hover:bg-red-50">
+                        Descarregar
+                    </button>
+                </div>
+                <div id="summaryContent" class="grid grid-cols-2 md:grid-cols-4 gap-4"></div>
+                <div id="typeBreakdown" class="mt-4 flex flex-wrap gap-2"></div>
+            </div>
+        </section>
+
+        <!-- Action Bar -->
+        <section id="actionBar" class="hidden mb-4 flex flex-wrap gap-3 items-center">
+            <div class="flex gap-2">
+                <button onclick="extractAll()" class="bg-green-600 hover:bg-green-700 text-white px-4 py-2 rounded-lg font-medium text-sm flex items-center gap-2 transition">
+                    📦 Extrair Tudo (ZIP)
+                </button>
+                <button onclick="extractFiltered()" class="bg-blue-600 hover:bg-blue-700 text-white px-4 py-2 rounded-lg font-medium text-sm flex items-center gap-2 transition">
+                    🎯 Extrair Filtrado
+                </button>
+                <button id="downloadModifiedBtn" onclick="downloadModified()" class="hidden bg-orange-600 hover:bg-orange-700 text-white px-4 py-2 rounded-lg font-medium text-sm flex items-center gap-2 transition">
+                    💾 Baixar Bundle Modificado
+                </button>
+            </div>
+            <div class="flex-1"></div>
+            <div class="flex gap-2 items-center">
+                <select id="typeFilter" onchange="loadAssets()" class="border border-gray-300 rounded-lg px-3 py-2 text-sm">
+                    <option value="">Todos os tipos</option>
+                </select>
+                <input type="text" id="searchInput" placeholder="Buscar por nome/ID..." 
+                       oninput="loadAssets()" class="border border-gray-300 rounded-lg px-3 py-2 text-sm w-64">
+            </div>
+        </section>
+
+        <!-- Assets Table -->
+        <section id="assetsSection" class="hidden bg-white rounded-xl shadow-sm border border-gray-200 overflow-hidden">
+            <div class="overflow-x-auto">
+                <table class="w-full text-sm">
+                    <thead class="bg-gray-50 border-b border-gray-200">
+                        <tr>
+                            <th class="text-left px-4 py-3 font-semibold text-gray-600">Path ID</th>
+                            <th class="text-left px-4 py-3 font-semibold text-gray-600">Tipo</th>
+                            <th class="text-left px-4 py-3 font-semibold text-gray-600">Nome</th>
+                            <th class="text-left px-4 py-3 font-semibold text-gray-600">Tamanho</th>
+                            <th class="text-left px-4 py-3 font-semibold text-gray-600 w-48">Ações</th>
+                        </tr>
+                    </thead>
+                    <tbody id="assetsTableBody"></tbody>
+                </table>
+            </div>
+            <div class="px-4 py-3 bg-gray-50 border-t border-gray-200 text-sm text-gray-500">
+                <span id="assetsCount">0</span> assets encontrados
+            </div>
+        </section>
+
+        <!-- Empty State -->
+        <section id="emptyState" class="text-center py-16 text-gray-400">
+            <div class="text-6xl mb-4">🎮</div>
+            <p class="text-lg">Carregue um arquivo Unity Asset Bundle para começar</p>
+        </section>
+
+    </main>
+
+    <!-- Details Modal -->
+    <div id="detailsModal" class="hidden fixed inset-0 z-50 flex items-center justify-center p-4 modal-backdrop">
+        <div class="bg-white rounded-xl shadow-2xl max-w-4xl w-full max-h-[90vh] overflow-hidden flex flex-col">
+            <div class="px-6 py-4 border-b border-gray-200 flex items-center justify-between">
+                <h3 id="modalTitle" class="font-semibold text-lg text-gray-800">Detalhes do Asset</h3>
+                <button onclick="closeModal()" class="text-gray-400 hover:text-gray-600 text-2xl">&times;</button>
+            </div>
+            <div class="flex-1 overflow-auto p-6">
+                <div id="modalPreview" class="mb-4 hidden text-center">
+                    <img id="modalPreviewImg" class="max-h-64 mx-auto rounded-lg shadow-md border border-gray-200">
+                </div>
+                <div id="modalInfo" class="mb-4 grid grid-cols-2 gap-3 text-sm"></div>
+                <div class="mb-2"><span class="text-xs font-semibold text-gray-500 uppercase">Propriedades (JSON)</span></div>
+                <pre id="modalJson" class="json-view bg-gray-900 text-green-400 p-4 rounded-lg"></pre>
+            </div>
+            <div class="px-6 py-3 border-t border-gray-200 flex justify-end gap-2">
+                <button onclick="extractFromModal()" class="bg-blue-600 hover:bg-blue-700 text-white px-4 py-2 rounded-lg text-sm font-medium">📥 Extrair</button>
+                <button onclick="closeModal()" class="bg-gray-200 hover:bg-gray-300 text-gray-700 px-4 py-2 rounded-lg text-sm font-medium">Fechar</button>
+            </div>
+        </div>
+    </div>
+
+    <!-- Replace Texture Modal -->
+    <div id="replaceModal" class="hidden fixed inset-0 z-50 flex items-center justify-center p-4 modal-backdrop">
+        <div class="bg-white rounded-xl shadow-2xl max-w-lg w-full overflow-hidden flex flex-col">
+            <div class="px-6 py-4 border-b border-gray-200 flex items-center justify-between">
+                <h3 class="font-semibold text-lg text-gray-800">🔄 Substituir Textura</h3>
+                <button onclick="closeReplaceModal()" class="text-gray-400 hover:text-gray-600 text-2xl">&times;</button>
+            </div>
+            <div class="p-6">
+                <div class="mb-4 p-3 bg-gray-50 rounded-lg text-sm">
+                    <div><span class="text-gray-500">Asset:</span> <span id="replaceAssetName" class="font-medium">-</span></div>
+                    <div><span class="text-gray-500">Path ID:</span> <span id="replaceAssetPathId" class="font-mono text-xs">-</span></div>
+                </div>
+                
+                <div class="mb-4">
+                    <label class="block text-sm font-medium text-gray-700 mb-2">Escolha o novo PNG:</label>
+                    <div id="replaceDropZone" class="border-2 border-dashed border-gray-300 rounded-lg p-6 text-center cursor-pointer hover:border-orange-400 hover:bg-orange-50 transition-all">
+                        <div class="text-3xl mb-2">🖼️</div>
+                        <p class="text-sm text-gray-600 mb-1">Arraste um PNG aqui ou clique para selecionar</p>
+                        <p class="text-xs text-gray-400">Formato: PNG (recomendado RGBA)</p>
+                        <input type="file" id="replacePngInput" class="hidden" accept="image/png">
+                    </div>
+                    <div id="replacePreview" class="hidden mt-4 text-center">
+                        <img id="replacePreviewImg" class="max-h-40 mx-auto rounded-lg border border-gray-200 shadow">
+                        <p id="replacePreviewInfo" class="text-xs text-gray-500 mt-2"></p>
+                    </div>
+                </div>
+                
+                <div class="bg-amber-50 border border-amber-200 rounded-lg p-3 text-xs text-amber-800 mb-4">
+                    <strong>⚠️ Aviso:</strong> Para melhores resultados, use um PNG com as <strong>mesmas dimensões</strong> da textura original. 
+                    Dimensões diferentes podem causar distorção ou falha no jogo.
+                </div>
+            </div>
+            <div class="px-6 py-3 border-t border-gray-200 flex justify-end gap-2">
+                <button onclick="closeReplaceModal()" class="bg-gray-200 hover:bg-gray-300 text-gray-700 px-4 py-2 rounded-lg text-sm font-medium">
+                    Cancelar
+                </button>
+                <button id="replaceConfirmBtn" onclick="confirmReplace()" disabled class="bg-orange-600 hover:bg-orange-700 disabled:bg-gray-400 disabled:cursor-not-allowed text-white px-4 py-2 rounded-lg text-sm font-medium flex items-center gap-2">
+                    <span id="replaceBtnText">🔄 Substituir</span>
+                </button>
+            </div>
+        </div>
+    </div>
+
+    <!-- Toast -->
+    <div id="toast" class="hidden fixed bottom-6 right-6 z-50 bg-gray-800 text-white px-5 py-3 rounded-lg shadow-lg">
+        <span id="toastMessage"></span>
+    </div>
+
+    <script>
+        const API_BASE = '';  // Mesma origem (relativo)
+        let currentModalPathId = null;
+        let replaceTargetPathId = null;
+        let hasModifications = false;
+        let selectedReplaceFile = null;
+
+        // Setup
+        document.addEventListener('DOMContentLoaded', () => {
+            setupUpload();
+            setupReplaceModal();
+            document.getElementById('detailsModal').addEventListener('click', e => {
+                if (e.target.id === 'detailsModal') closeModal();
+            });
+            document.getElementById('replaceModal').addEventListener('click', e => {
+                if (e.target.id === 'replaceModal') closeReplaceModal();
+            });
+            document.addEventListener('keydown', e => { if (e.key === 'Escape') { closeModal(); closeReplaceModal(); } });
+        });
+
+        function setupUpload() {
+            const dz = document.getElementById('dropZone');
+            const fi = document.getElementById('fileInput');
+            dz.onclick = () => fi.click();
+            dz.ondragover = e => { e.preventDefault(); dz.classList.add('dragover'); };
+            dz.ondragleave = () => dz.classList.remove('dragover');
+            dz.ondrop = e => {
+                e.preventDefault(); dz.classList.remove('dragover');
+                if (e.dataTransfer.files.length) handleFile(e.dataTransfer.files[0]);
+            };
+            fi.onchange = e => { if (e.target.files.length) handleFile(e.target.files[0]); };
+        }
+
+        async function handleFile(file) {
+            document.getElementById('uploadProgress').classList.remove('hidden');
+            const fd = new FormData();
+            fd.append('file', file);
+            
+            try {
+                const r = await fetch('/api/upload', { method: 'POST', body: fd });
+                const data = await r.json();
+                document.getElementById('uploadProgress').classList.add('hidden');
+                
+                if (data.success) {
+                    showToast('✅ Arquivo carregado!');
+                    showSummary(data.summary);
+                    populateTypes();
+                    loadAssets();
+                    document.getElementById('uploadSection').classList.add('hidden');
+                    document.getElementById('summarySection').classList.remove('hidden');
+                    document.getElementById('actionBar').classList.remove('hidden');
+                    document.getElementById('assetsSection').classList.remove('hidden');
+                    document.getElementById('emptyState').classList.add('hidden');
+                } else {
+                    showToast('❌ ' + (data.error || 'Erro'));
+                }
+            } catch (err) {
+                document.getElementById('uploadProgress').classList.add('hidden');
+                showToast('❌ Erro de conexão');
+            }
+        }
+
+        function showSummary(s) {
+            document.getElementById('summaryContent').innerHTML = `
+                <div class="bg-blue-50 rounded-lg p-3">
+                    <div class="text-xs text-blue-600 font-medium">Arquivo</div>
+                    <div class="font-semibold text-gray-800 truncate">${s.file}</div>
+                </div>
+                <div class="bg-green-50 rounded-lg p-3">
+                    <div class="text-xs text-green-600 font-medium">Total Assets</div>
+                    <div class="font-semibold text-2xl text-gray-800">${s.total_assets}</div>
+                </div>
+                <div class="bg-purple-50 rounded-lg p-3">
+                    <div class="text-xs text-purple-600 font-medium">Tipos</div>
+                    <div class="font-semibold text-2xl text-gray-800">${s.types.length}</div>
+                </div>
+                <div class="bg-orange-50 rounded-lg p-3">
+                    <div class="text-xs text-orange-600 font-medium">Status</div>
+                    <div class="font-semibold text-green-600">✓ Processado</div>
+                </div>
+            `;
+            document.getElementById('typeBreakdown').innerHTML = Object.entries(s.type_counts)
+                .map(([t, c]) => `<span onclick="filterByType('${t}')" class="cursor-pointer inline-flex items-center gap-1 px-3 py-1 bg-gray-100 text-gray-700 rounded-full text-xs hover:bg-blue-100 hover:text-blue-700">${t} <span class="font-semibold">${c}</span></span>`).join('');
+        }
+
+        function filterByType(t) {
+            document.getElementById('typeFilter').value = t;
+            loadAssets();
+        }
+
+        async function populateTypes() {
+            try {
+                const r = await fetch('/api/types');
+                const d = await r.json();
+                document.getElementById('typeFilter').innerHTML = '<option value="">Todos os tipos</option>' +
+                    d.types.map(t => `<option value="${t}">${t}</option>`).join('');
+            } catch(e) {}
+        }
+
+        async function loadAssets() {
+            const type = document.getElementById('typeFilter').value;
+            const search = document.getElementById('searchInput').value;
+            let url = '/api/assets';
+            const p = new URLSearchParams();
+            if (type) p.set('type', type);
+            if (search) p.set('search', search);
+            if (p.toString()) url += '?' + p.toString();
+            
+            try {
+                const r = await fetch(url);
+                const d = await r.json();
+                const tbody = document.getElementById('assetsTableBody');
+                document.getElementById('assetsCount').textContent = d.total;
+                
+                if (!d.assets.length) {
+                    tbody.innerHTML = `<tr><td colspan="5" class="px-4 py-8 text-center text-gray-400">Nenhum asset encontrado</td></tr>`;
+                    return;
+                }
+                
+                tbody.innerHTML = d.assets.map(a => {
+                    const size = a.size > 0 ? (a.size/1024).toFixed(1)+' KB' : '-';
+                    const name = a.name || '<em class="text-gray-400">(sem nome)</em>';
+                    const tex = a.type === 'Texture2D' || a.type === 'Sprite';
+                    return `
+                        <tr class="asset-row border-b border-gray-100">
+                            <td class="px-4 py-2 font-mono text-xs text-gray-500">${a.path_id}</td>
+                            <td class="px-4 py-2"><span class="px-2 py-0.5 bg-indigo-100 text-indigo-700 rounded text-xs font-medium">${a.type}</span></td>
+                            <td class="px-4 py-2 text-gray-800">${name}</td>
+                            <td class="px-4 py-2 text-gray-500 text-xs">${size}</td>
+                            <td class="px-4 py-2">
+                                <div class="flex gap-1 flex-wrap">
+                                    <button onclick="showDetails(${a.path_id})" class="text-blue-600 hover:text-blue-800 text-xs px-2 py-1 rounded hover:bg-blue-50">🔍 Ver</button>
+                                    ${tex ? `<button onclick="showPreview(${a.path_id})" class="text-purple-600 hover:text-purple-800 text-xs px-2 py-1 rounded hover:bg-purple-50">🖼️ Preview</button>` : ''}
+                                    ${tex ? `<button onclick="openReplaceModal(${a.path_id}, '${a.name || 'textura'}')" class="text-orange-600 hover:text-orange-800 text-xs px-2 py-1 rounded hover:bg-orange-50">🔄 Substituir</button>` : ''}
+                                    <button onclick="extractOne(${a.path_id})" class="text-green-600 hover:text-green-800 text-xs px-2 py-1 rounded hover:bg-green-50">📥 Baixar</button>
+                                </div>
+                            </td>
+                        </tr>
+                    `;
+                }).join('');
+            } catch(e) { showToast('❌ Erro'); }
+        }
+
+        async function showDetails(pid) {
+            currentModalPathId = pid;
+            try {
+                const r = await fetch(`/api/asset/${pid}`);
+                const d = await r.json();
+                document.getElementById('modalTitle').textContent = `${d.type} - ${d.name || '(sem nome)'}`;
+                document.getElementById('modalInfo').innerHTML = `
+                    <div><span class="text-gray-500">Path ID:</span> <span class="font-mono">${d.path_id}</span></div>
+                    <div><span class="text-gray-500">Tipo:</span> <span class="font-medium">${d.type}</span></div>
+                    <div><span class="text-gray-500">Nome:</span> <span>${d.name || '-'}</span></div>
+                    <div><span class="text-gray-500">Tamanho:</span> <span>${d.size > 0 ? (d.size/1024).toFixed(1)+' KB' : '-'}</span></div>
+                    <div class="col-span-2"><span class="text-gray-500">Container:</span> <span class="font-mono text-xs">${d.container || '-'}</span></div>
+                `;
+                const pv = document.getElementById('modalPreview');
+                const pi = document.getElementById('modalPreviewImg');
+                if (d.type === 'Texture2D' || d.type === 'Sprite') {
+                    pi.src = `/api/preview/${pid}`;
+                    pv.classList.remove('hidden');
+                } else {
+                    pv.classList.add('hidden');
+                }
+                document.getElementById('modalJson').textContent = JSON.stringify(d.properties || {}, null, 2);
+                document.getElementById('detailsModal').classList.remove('hidden');
+            } catch(e) { showToast('❌ Erro'); }
+        }
+
+        function showPreview(pid) { showDetails(pid); }
+        function closeModal() { document.getElementById('detailsModal').classList.add('hidden'); currentModalPathId = null; }
+        function extractFromModal() { if (currentModalPathId) { extractOne(currentModalPathId); closeModal(); } }
+
+        function extractOne(pid) {
+            showToast('⏳ Extraindo...');
+            window.open(`/api/extract/${pid}`, '_blank');
+        }
+
+        async function extractAll() {
+            showToast('⏳ Preparando extração...');
+            try {
+                const r = await fetch('/api/extract-all', {
+                    method: 'POST', headers: {'Content-Type': 'application/json'},
+                    body: JSON.stringify({types: null})
+                });
+                const d = await r.json();
+                if (d.success) {
+                    showToast(`✅ Extraídos ${d.total_files} arquivos`);
+                    window.location.href = `/api/download-zip/${d.zip_filename}`;
+                } else showToast('❌ ' + (d.error || 'Erro'));
+            } catch(e) { showToast('❌ Erro de conexão'); }
+        }
+
+        async function extractFiltered() {
+            const type = document.getElementById('typeFilter').value;
+            if (!type) { showToast('⚠️ Selecione um tipo'); return; }
+            showToast(`⏳ Extraindo ${type}...`);
+            try {
+                const r = await fetch('/api/extract-all', {
+                    method: 'POST', headers: {'Content-Type': 'application/json'},
+                    body: JSON.stringify({types: [type]})
+                });
+                const d = await r.json();
+                if (d.success) {
+                    const total = Object.values(d.per_type).reduce((a,b)=>a+b,0);
+                    showToast(`✅ Extraídos ${total} arquivos`);
+                    window.location.href = `/api/download-zip/${d.zip_filename}`;
+                } else showToast('❌ ' + (d.error || 'Erro'));
+            } catch(e) { showToast('❌ Erro'); }
+        }
+
+        async function unloadFile() {
+            try { await fetch('/api/unload', {method: 'POST'}); } catch(e) {}
+            document.getElementById('summarySection').classList.add('hidden');
+            document.getElementById('actionBar').classList.add('hidden');
+            document.getElementById('assetsSection').classList.add('hidden');
+            document.getElementById('emptyState').classList.remove('hidden');
+            document.getElementById('uploadSection').classList.remove('hidden');
+            showToast('🗑️ Arquivo descarregado');
+            hasModifications = false;
+            document.getElementById('downloadModifiedBtn').classList.add('hidden');
+        }
+
+        // ====== SUBSTITUIÇÃO DE TEXTURA ======
+        function setupReplaceModal() {
+            const dz = document.getElementById('replaceDropZone');
+            const fi = document.getElementById('replacePngInput');
+            
+            dz.onclick = () => fi.click();
+            dz.ondragover = e => { e.preventDefault(); dz.classList.add('border-orange-400', 'bg-orange-50'); };
+            dz.ondragleave = () => dz.classList.remove('border-orange-400', 'bg-orange-50');
+            dz.ondrop = e => {
+                e.preventDefault();
+                dz.classList.remove('border-orange-400', 'bg-orange-50');
+                if (e.dataTransfer.files.length) handleReplaceFile(e.dataTransfer.files[0]);
+            };
+            fi.onchange = e => { if (e.target.files.length) handleReplaceFile(e.target.files[0]); };
+        }
+
+        function openReplaceModal(pathId, name) {
+            replaceTargetPathId = pathId;
+            selectedReplaceFile = null;
+            document.getElementById('replaceAssetName').textContent = name || '(sem nome)';
+            document.getElementById('replaceAssetPathId').textContent = pathId;
+            document.getElementById('replacePreview').classList.add('hidden');
+            document.getElementById('replacePngInput').value = '';
+            document.getElementById('replaceConfirmBtn').disabled = true;
+            document.getElementById('replaceBtnText').textContent = '🔄 Substituir';
+            document.getElementById('replaceModal').classList.remove('hidden');
+        }
+
+        function closeReplaceModal() {
+            document.getElementById('replaceModal').classList.add('hidden');
+            replaceTargetPathId = null;
+            selectedReplaceFile = null;
+        }
+
+        function handleReplaceFile(file) {
+            if (!file.type.includes('png') && !file.name.toLowerCase().endsWith('.png')) {
+                showToast('⚠️ Apenas arquivos PNG são suportados');
+                return;
+            }
+            
+            selectedReplaceFile = file;
+            const reader = new FileReader();
+            reader.onload = e => {
+                const img = document.getElementById('replacePreviewImg');
+                img.onload = () => {
+                    document.getElementById('replacePreviewInfo').textContent = 
+                        `${img.naturalWidth} × ${img.naturalHeight} pixels • ${(file.size/1024).toFixed(1)} KB`;
+                    document.getElementById('replacePreview').classList.remove('hidden');
+                    document.getElementById('replaceConfirmBtn').disabled = false;
+                };
+                img.src = e.target.result;
+            };
+            reader.readAsDataURL(file);
+        }
+
+        async function confirmReplace() {
+            if (!selectedReplaceFile || replaceTargetPathId === null) return;
+            
+            const btn = document.getElementById('replaceConfirmBtn');
+            const btnText = document.getElementById('replaceBtnText');
+            btn.disabled = true;
+            btnText.textContent = 'Substituindo...';
+            
+            const fd = new FormData();
+            fd.append('png', selectedReplaceFile);
+            
+            try {
+                const r = await fetch(`/api/replace-texture/${replaceTargetPathId}`, {
+                    method: 'POST',
+                    body: fd
+                });
+                const data = await r.json();
+                
+                if (data.success) {
+                    showToast(`✅ Textura substituída! (${data.new_image.width}×${data.new_image.height})`);
+                    hasModifications = true;
+                    document.getElementById('downloadModifiedBtn').classList.remove('hidden');
+                    closeReplaceModal();
+                    // Recarrega lista para atualizar previews
+                    loadAssets();
+                } else {
+                    showToast('❌ ' + (data.error || 'Erro'));
+                    btn.disabled = false;
+                    btnText.textContent = '🔄 Substituir';
+                }
+            } catch (err) {
+                showToast('❌ Erro de conexão');
+                btn.disabled = false;
+                btnText.textContent = '🔄 Substituir';
+            }
+        }
+
+        function downloadModified() {
+            if (!hasModifications) {
+                showToast('⚠️ Nenhuma modificação pendente');
+                return;
+            }
+            showToast('⏳ Gerando bundle modificado...');
+            window.open('/api/download-modified', '_blank');
+        }
+
+        function showToast(msg) {
+            const t = document.getElementById('toast');
+            document.getElementById('toastMessage').textContent = msg;
+            t.classList.remove('hidden');
+            setTimeout(() => t.classList.add('hidden'), 3500);
+        }
+    </script>
+</body>
+</html>
