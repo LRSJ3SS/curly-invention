@@ -1,0 +1,24 @@
+# Render Blueprint - Deploy automático do UABE Python
+# Uso: No Render, crie um "Blueprint" e aponte para este arquivo
+# Ou configure manualmente conforme abaixo
+
+services:
+  - type: web
+    name: uabe-python
+    runtime: python
+    repo: https://github.com/SEU-USUARIO/SEU-REPOSITORIO  # Altere para o seu repo
+    branch: main
+    buildCommand: "pip install -r requirements.txt"
+    startCommand: "gunicorn app:app --workers 2 --threads 4 --timeout 120 --bind 0.0.0.0:$PORT"
+    envVars:
+      - key: PYTHON_VERSION
+        value: 3.11.0
+    plan: free  # ou starter, standard, etc.
+
+# ====== Configuração manual (se não usar Blueprint) ======
+# 1. New → Web Service
+# 2. Conecte seu repositório GitHub
+# 3. Runtime: Python 3
+# 4. Build Command: pip install -r requirements.txt
+# 5. Start Command: gunicorn app:app --workers 2 --threads 4 --timeout 120 --bind 0.0.0.0:$PORT
+# 6. Instance Type: Free
