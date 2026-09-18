@@ -24,7 +24,6 @@ BASE_DIR = Path(__file__).parent
 UPLOAD_DIR = BASE_DIR / "_uploads"
 EXPORT_DIR = BASE_DIR / "_exports"
 SESSION_DIR = BASE_DIR / "_session"
-SESSION_FILE = SESSION_DIR / "current_bundle.txt"
 
 UPLOAD_DIR.mkdir(exist_ok=True)
 EXPORT_DIR.mkdir(exist_ok=True)
@@ -57,49 +56,107 @@ CORS(app, origins=ALLOWED_ORIGINS, supports_credentials=True)
 uabe_instance = UABEPython()
 current_file = None
 
-# ====== PERSISTÊNCIA DE SESSÃO ======
-# Solução para múltiplos workers gunicorn: salva o caminho do bundle em disco
-# e cada worker tenta recarregá-lo se necessário
+# ====== PERSISTÊNCIA ROBUSTA DE SESSÃO ======
+# O Render pode ter múltiplos workers gunicorn com memória isolada.
+# Solução: salvar o bundle atual em um arquivo de NOME FIXO em disco.
+# Qualquer worker que receber uma requisição tenta carregar desse arquivo.
 
-def _save_session(file_path: str):
-    """Salva o caminho do arquivo atual no arquivo de sessão"""
+CURRENT_BUNDLE_FILE = SESSION_DIR / "current_bundle.bin"
+CURRENT_BUNDLE_META = SESSION_DIR / "current_bundle_meta.json"
+
+def _save_session(file_path: str, original_filename: str = ""):
+    """
+    Salva o bundle atual em disco com nome fixo para que QUALQUER worker
+    possa recarregá-lo. Copia o arquivo original para um local conhecido.
+    """
     try:
-        SESSION_FILE.write_text(file_path, encoding='utf-8')
+        import shutil
+        import json
+        
+        # Copia o bundle para o arquivo fixo de sessão
+        shutil.copy2(file_path, str(CURRENT_BUNDLE_FILE))
+        
+        # Salva metadados
+        meta = {
+            'original_filename': original_filename,
+            'source_path': file_path,
+            'saved_at': str(__import__('datetime').datetime.now()),
+            'size_bytes': os.path.getsize(file_path)
+        }
+        CURRENT_BUNDLE_META.write_text(json.dumps(meta, indent=2), encoding='utf-8')
+        
+        print(f"💾 Sessão salva em disco: {CURRENT_BUNDLE_FILE}")
+        return True
     except Exception as e:
-        print(f"Aviso: não foi possível salvar sessão: {e}")
+        print(f"⚠️ ERRO ao salvar sessão: {e}")
+        import traceback
+        traceback.print_exc()
+        return False
 
 def _clear_session():
-    """Limpa o arquivo de sessão"""
+    """Remove todos os arquivos de sessão"""
     try:
-        if SESSION_FILE.exists():
-            SESSION_FILE.unlink()
-    except:
-        pass
+        if CURRENT_BUNDLE_FILE.exists():
+            CURRENT_BUNDLE_FILE.unlink()
+        if CURRENT_BUNDLE_META.exists():
+            CURRENT_BUNDLE_META.unlink()
+        print("🗑️ Sessão limpa")
+    except Exception as e:
+        print(f"Aviso ao limpar sessão: {e}")
 
 def ensure_bundle_loaded() -> bool:
     """
-    Garante que o bundle está carregado na instância atual.
-    Se não estiver, tenta recarregar do arquivo de sessão em disco.
-    Essencial para funcionar corretamente com múltiplos workers gunicorn.
+    Garante que o bundle está carregado. Se não estiver na memória,
+    tenta carregar do arquivo fixo em disco. Funciona entre workers.
     """
     global current_file
     
+    # Já está carregado e o arquivo existe
     if current_file and os.path.exists(current_file):
         return True
     
-    # Tenta recarregar do arquivo de sessão
-    try:
-        if SESSION_FILE.exists():
-            saved_path = SESSION_FILE.read_text(encoding='utf-8').strip()
-            if saved_path and os.path.exists(saved_path):
-                if uabe_instance.load_file(saved_path):
-                    current_file = saved_path
-                    print(f"♻️ Bundle recarregado do disco: {saved_path}")
-                    return True
-    except Exception as e:
-        print(f"Aviso: falha ao recarregar sessão: {e}")
+    # Tenta 1: arquivo salvo pela própria instância anteriormente
+    if current_file and not os.path.exists(current_file):
+        current_file = None
     
+    # Tenta 2: carregar do arquivo fixo de sessão em disco
+    if CURRENT_BUNDLE_FILE.exists() and CURRENT_BUNDLE_FILE.stat().st_size > 0:
+        try:
+            print(f"♻️ Tentando recarregar bundle do arquivo fixo: {CURRENT_BUNDLE_FILE}")
+            if uabe_instance.load_file(str(CURRENT_BUNDLE_FILE)):
+                current_file = str(CURRENT_BUNDLE_FILE)
+                print(f"✅ Bundle recarregado com sucesso! Assets: {len(uabe_instance.assets)}")
+                return True
+            else:
+                print("❌ Falha ao carregar o arquivo de sessão")
+        except Exception as e:
+            print(f"❌ Exceção ao recarregar: {e}")
+    
+    print("⚠️ Nenhum bundle carregado na memória e nenhum arquivo de sessão encontrado")
     return False
+
+def _get_debug_info() -> dict:
+    """Retorna informações de diagnóstico da instância atual"""
+    import json
+    
+    meta = {}
+    if CURRENT_BUNDLE_META.exists():
+        try:
+            meta = json.loads(CURRENT_BUNDLE_META.read_text(encoding='utf-8'))
+        except:
+            pass
+    
+    return {
+        'pid': os.getpid(),
+        'current_file_in_memory': current_file,
+        'current_file_exists': os.path.exists(current_file) if current_file else False,
+        'session_file_exists': CURRENT_BUNDLE_FILE.exists(),
+        'session_file_size': CURRENT_BUNDLE_FILE.stat().st_size if CURRENT_BUNDLE_FILE.exists() else 0,
+        'assets_loaded': len(uabe_instance.assets),
+        'meta': meta,
+        'session_dir_contents': [str(f.name) for f in SESSION_DIR.iterdir()] if SESSION_DIR.exists() else [],
+        'upload_dir_contents': [str(f.name) for f in UPLOAD_DIR.iterdir()] if UPLOAD_DIR.exists() else [],
+    }
 
 
 # ====== UTILITÁRIOS ======
@@ -173,7 +230,7 @@ def api_upload():
     
     if uabe_instance.load_file(str(save_path)):
         current_file = str(save_path)
-        _save_session(current_file)  # Persiste para outros workers
+        _save_session(current_file, filename)  # Persiste para outros workers (arquivo fixo em disco)
         return jsonify({
             'success': True,
             'summary': uabe_instance.get_summary(),
@@ -396,6 +453,12 @@ def api_download_modified():
             
     except Exception as e:
         return jsonify({'error': f'Erro ao salvar: {str(e)}'}), 500
+
+
+@app.route('/api/debug/status', methods=['GET'])
+def api_debug_status():
+    """Endpoint de diagnóstico — acessível para ver o estado da instância"""
+    return jsonify(_get_debug_info())
 
 
 @app.route('/api/unload', methods=['POST'])
