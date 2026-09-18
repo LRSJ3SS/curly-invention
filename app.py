@@ -262,6 +262,94 @@ def api_download_zip(filename):
     return send_file(str(zip_path), as_attachment=True)
 
 
+@app.route('/api/replace-texture/<int:path_id>', methods=['POST'])
+def api_replace_texture(path_id):
+    """Substitui uma Texture2D por um arquivo PNG enviado"""
+    global current_file
+    
+    if not current_file:
+        return jsonify({'error': 'Nenhum arquivo carregado'}), 400
+    
+    if 'png' not in request.files:
+        return jsonify({'error': 'Arquivo PNG não enviado (campo esperado: "png")'}), 400
+    
+    png_file = request.files['png']
+    if not png_file.filename:
+        return jsonify({'error': 'Nome de arquivo PNG vazio'}), 400
+    
+    # Verifica se o asset é uma textura
+    asset_info = uabe_instance.get_asset_by_path_id(path_id)
+    if not asset_info:
+        return jsonify({'error': 'Asset não encontrado'}), 404
+    
+    if asset_info.type not in ['Texture2D', 'Sprite']:
+        return jsonify({'error': f'Asset do tipo {asset_info.type} não é uma textura substituível'}), 400
+    
+    try:
+        from PIL import Image
+        
+        # Abre a imagem diretamente do upload
+        pil_img = Image.open(png_file.stream)
+        
+        # Validação básica
+        if pil_img.size[0] == 0 or pil_img.size[1] == 0:
+            return jsonify({'error': 'Imagem PNG inválida'}), 400
+        
+        # Executa a substituição
+        success = uabe_instance.replace_texture(path_id, pil_img)
+        
+        if success:
+            return jsonify({
+                'success': True,
+                'message': 'Textura substituída com sucesso',
+                'asset': {
+                    'path_id': path_id,
+                    'type': asset_info.type,
+                    'name': asset_info.name
+                },
+                'new_image': {
+                    'width': pil_img.size[0],
+                    'height': pil_img.size[1],
+                    'mode': pil_img.mode
+                }
+            })
+        else:
+            return jsonify({'error': 'Falha ao substituir textura (ver logs do servidor)'}), 500
+            
+    except Exception as e:
+        return jsonify({'error': f'Erro ao processar PNG: {str(e)}'}), 500
+
+
+@app.route('/api/download-modified', methods=['GET'])
+def api_download_modified():
+    """Gera e baixa o bundle completo com as modificações aplicadas"""
+    global current_file
+    
+    if not current_file:
+        return jsonify({'error': 'Nenhum arquivo carregado'}), 400
+    
+    try:
+        import time
+        base_name = Path(current_file).stem
+        modified_filename = f"{base_name}_modified.unity3d"
+        output_path = EXPORT_DIR / modified_filename
+        
+        saved_path = uabe_instance.save_modified_bundle(str(output_path))
+        
+        if saved_path and os.path.exists(saved_path):
+            return send_file(
+                saved_path,
+                as_attachment=True,
+                download_name=modified_filename,
+                mimetype='application/octet-stream'
+            )
+        else:
+            return jsonify({'error': 'Falha ao gerar arquivo modificado'}), 500
+            
+    except Exception as e:
+        return jsonify({'error': f'Erro ao salvar: {str(e)}'}), 500
+
+
 @app.route('/api/unload', methods=['POST'])
 def api_unload():
     global current_file

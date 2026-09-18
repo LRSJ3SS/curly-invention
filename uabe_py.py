@@ -459,6 +459,156 @@ class UABEPython:
             print(f"Erro no preview {path_id}: {e}")
             return None
     
+    def replace_texture(self, path_id: int, new_image) -> bool:
+        """
+        Substitui uma Texture2D por uma nova imagem PIL.
+        
+        Args:
+            path_id: Path ID do asset Texture2D a ser substituído
+            new_image: Objeto PIL.Image (deve ser RGBA ou RGB)
+        
+        Returns:
+            True se a substituição foi bem-sucedida
+        """
+        obj = self.objects_map.get(path_id)
+        if not obj:
+            print(f"Asset {path_id} não encontrado")
+            return False
+        
+        if obj.type.name not in ['Texture2D', 'Sprite']:
+            print(f"Asset {path_id} não é uma textura (tipo: {obj.type.name})")
+            return False
+        
+        try:
+            data = obj.read()
+            
+            # Para Sprite, pegamos a textura associada
+            if obj.type.name == 'Sprite':
+                if hasattr(data, 'm_RD') and hasattr(data.m_RD, 'texture') and data.m_RD.texture:
+                    data = data.m_RD.texture.read()
+                else:
+                    print("Sprite não tem textura associada")
+                    return False
+            
+            if not hasattr(data, 'image'):
+                print("Textura não tem propriedade .image")
+                return False
+            
+            # Garante que a imagem está no modo compatível (RGBA)
+            from PIL import Image
+            if new_image.mode not in ['RGBA', 'RGB']:
+                new_image = new_image.convert('RGBA')
+            
+            # Atribui a nova imagem
+            data.image = new_image
+            
+            # Salva as alterações no objeto
+            data.save()
+            
+            print(f"✅ Textura {path_id} substituída com sucesso")
+            return True
+            
+        except Exception as e:
+            print(f"❌ Erro ao substituir textura {path_id}: {e}")
+            import traceback
+            traceback.print_exc()
+            return False
+    
+    def replace_texture_from_file(self, path_id: int, png_file_path: str) -> bool:
+        """
+        Substitui uma Texture2D a partir de um arquivo PNG.
+        
+        Args:
+            path_id: Path ID do asset Texture2D
+            png_file_path: Caminho para o arquivo PNG de substituição
+        
+        Returns:
+            True se bem-sucedido
+        """
+        from PIL import Image
+        
+        if not os.path.exists(png_file_path):
+            print(f"Arquivo PNG não encontrado: {png_file_path}")
+            return False
+        
+        try:
+            pil_img = Image.open(png_file_path)
+            return self.replace_texture(path_id, pil_img)
+        except Exception as e:
+            print(f"Erro ao abrir PNG: {e}")
+            return False
+    
+    def save_modified_bundle(self, output_path: str) -> Optional[str]:
+        """
+        Salva o bundle completo com todas as modificações aplicadas.
+        
+        Args:
+            output_path: Caminho onde o arquivo modificado será salvo
+        
+        Returns:
+            Caminho do arquivo salvo, ou None em caso de erro
+        """
+        if not self.env:
+            print("Nenhum ambiente carregado")
+            return None
+        
+        try:
+            import tempfile
+            import shutil
+            
+            output_path = os.path.abspath(output_path)
+            output_dir = os.path.dirname(output_path)
+            output_filename = os.path.basename(output_path)
+            os.makedirs(output_dir, exist_ok=True)
+            
+            # O UnityPy salva em um diretório "output/" no CWD atual.
+            # Usamos um diretório temporário para controlar o processo.
+            with tempfile.TemporaryDirectory() as tmpdir:
+                old_cwd = os.getcwd()
+                try:
+                    os.chdir(tmpdir)
+                    # Salva com compressão LZ4 (ampla compatibilidade)
+                    # Assinatura: env.save(pack="none"|"lz4"|"lzma", out_path="diretorio")
+                    self.env.save(pack="lz4", out_path=".")
+                    
+                    # Procura o arquivo gerado
+                    saved_files = []
+                    for root, dirs, files in os.walk(tmpdir):
+                        for f in files:
+                            full = os.path.join(root, f)
+                            if os.path.isfile(full) and not f.startswith('.'):
+                                saved_files.append(full)
+                    
+                    if saved_files:
+                        # Prefere o arquivo que parece ser o bundle (não .resource, etc.)
+                        source_file = saved_files[0]
+                        shutil.copy2(source_file, output_path)
+                        
+                        if os.path.exists(output_path):
+                            size = os.path.getsize(output_path)
+                            print(f"✅ Bundle modificado salvo em: {output_path} ({size/1024:.1f} KB)")
+                            return output_path
+                finally:
+                    os.chdir(old_cwd)
+            
+            print("❌ Arquivo não foi gerado por env.save()")
+            return None
+                
+        except Exception as e:
+            print(f"❌ Erro ao salvar bundle modificado: {e}")
+            import traceback
+            traceback.print_exc()
+            return None
+    
+    def has_modifications(self) -> bool:
+        """Verifica se há modificações pendentes no ambiente"""
+        if not self.env:
+            return False
+        try:
+            return getattr(self.env, 'modified', False)
+        except:
+            return False
+
     @staticmethod
     def _sanitize_filename(name: str) -> str:
         """Remove caracteres invalidos de nomes de arquivo"""
