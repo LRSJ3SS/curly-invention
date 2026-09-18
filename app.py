@@ -23,8 +23,12 @@ from uabe_py import UABEPython
 BASE_DIR = Path(__file__).parent
 UPLOAD_DIR = BASE_DIR / "_uploads"
 EXPORT_DIR = BASE_DIR / "_exports"
+SESSION_DIR = BASE_DIR / "_session"
+SESSION_FILE = SESSION_DIR / "current_bundle.txt"
+
 UPLOAD_DIR.mkdir(exist_ok=True)
 EXPORT_DIR.mkdir(exist_ok=True)
+SESSION_DIR.mkdir(exist_ok=True)
 
 # Porta do Render (via variável de ambiente) ou padrão 5000
 PORT = int(os.environ.get('PORT', 5000))
@@ -49,10 +53,53 @@ app.config['MAX_CONTENT_LENGTH'] = 1 * 1024 * 1024 * 1024  # 1GB
 # Habilita CORS (útil se quiser usar interface externa como GitHub Pages)
 CORS(app, origins=ALLOWED_ORIGINS, supports_credentials=True)
 
-# Instância global — CUIDADO: no Render com múltiplos workers,
-# cada worker terá sua própria instância. Para uso simples é aceitável.
+# Instância global
 uabe_instance = UABEPython()
 current_file = None
+
+# ====== PERSISTÊNCIA DE SESSÃO ======
+# Solução para múltiplos workers gunicorn: salva o caminho do bundle em disco
+# e cada worker tenta recarregá-lo se necessário
+
+def _save_session(file_path: str):
+    """Salva o caminho do arquivo atual no arquivo de sessão"""
+    try:
+        SESSION_FILE.write_text(file_path, encoding='utf-8')
+    except Exception as e:
+        print(f"Aviso: não foi possível salvar sessão: {e}")
+
+def _clear_session():
+    """Limpa o arquivo de sessão"""
+    try:
+        if SESSION_FILE.exists():
+            SESSION_FILE.unlink()
+    except:
+        pass
+
+def ensure_bundle_loaded() -> bool:
+    """
+    Garante que o bundle está carregado na instância atual.
+    Se não estiver, tenta recarregar do arquivo de sessão em disco.
+    Essencial para funcionar corretamente com múltiplos workers gunicorn.
+    """
+    global current_file
+    
+    if current_file and os.path.exists(current_file):
+        return True
+    
+    # Tenta recarregar do arquivo de sessão
+    try:
+        if SESSION_FILE.exists():
+            saved_path = SESSION_FILE.read_text(encoding='utf-8').strip()
+            if saved_path and os.path.exists(saved_path):
+                if uabe_instance.load_file(saved_path):
+                    current_file = saved_path
+                    print(f"♻️ Bundle recarregado do disco: {saved_path}")
+                    return True
+    except Exception as e:
+        print(f"Aviso: falha ao recarregar sessão: {e}")
+    
+    return False
 
 
 # ====== UTILITÁRIOS ======
@@ -126,6 +173,7 @@ def api_upload():
     
     if uabe_instance.load_file(str(save_path)):
         current_file = str(save_path)
+        _save_session(current_file)  # Persiste para outros workers
         return jsonify({
             'success': True,
             'summary': uabe_instance.get_summary(),
@@ -141,7 +189,7 @@ def api_upload():
 
 @app.route('/api/assets', methods=['GET'])
 def api_assets():
-    if not current_file:
+    if not ensure_bundle_loaded():
         return jsonify({'assets': [], 'error': 'Nenhum arquivo carregado'}), 400
     
     asset_type = request.args.get('type', '').strip()
@@ -169,21 +217,21 @@ def api_assets():
 
 @app.route('/api/types', methods=['GET'])
 def api_types():
-    if not current_file:
+    if not ensure_bundle_loaded():
         return jsonify({'types': []}), 400
     return jsonify({'types': uabe_instance.get_all_types()})
 
 
 @app.route('/api/summary', methods=['GET'])
 def api_summary():
-    if not current_file:
+    if not ensure_bundle_loaded():
         return jsonify({'error': 'Nenhum arquivo carregado'}), 400
     return jsonify(uabe_instance.get_summary())
 
 
 @app.route('/api/asset/<int:path_id>', methods=['GET'])
 def api_asset_details(path_id):
-    if not current_file:
+    if not ensure_bundle_loaded():
         return jsonify({'error': 'Nenhum arquivo carregado'}), 400
     
     details = uabe_instance.get_asset_details(path_id)
@@ -194,7 +242,7 @@ def api_asset_details(path_id):
 
 @app.route('/api/preview/<int:path_id>', methods=['GET'])
 def api_preview(path_id):
-    if not current_file:
+    if not ensure_bundle_loaded():
         abort(404)
     
     preview_bytes = uabe_instance.get_texture_preview(path_id, max_size=512)
@@ -210,7 +258,7 @@ def api_preview(path_id):
 
 @app.route('/api/extract/<int:path_id>', methods=['GET'])
 def api_extract_one(path_id):
-    if not current_file:
+    if not ensure_bundle_loaded():
         return jsonify({'error': 'Nenhum arquivo carregado'}), 400
     
     out_dir = EXPORT_DIR / f"single_{path_id}"
@@ -225,7 +273,7 @@ def api_extract_one(path_id):
 
 @app.route('/api/extract-all', methods=['POST'])
 def api_extract_all():
-    if not current_file:
+    if not ensure_bundle_loaded():
         return jsonify({'error': 'Nenhum arquivo carregado'}), 400
     
     data = request.get_json(silent=True) or {}
@@ -267,7 +315,7 @@ def api_replace_texture(path_id):
     """Substitui uma Texture2D por um arquivo PNG enviado"""
     global current_file
     
-    if not current_file:
+    if not ensure_bundle_loaded():
         return jsonify({'error': 'Nenhum arquivo carregado'}), 400
     
     if 'png' not in request.files:
@@ -325,7 +373,7 @@ def api_download_modified():
     """Gera e baixa o bundle completo com as modificações aplicadas"""
     global current_file
     
-    if not current_file:
+    if not ensure_bundle_loaded():
         return jsonify({'error': 'Nenhum arquivo carregado'}), 400
     
     try:
@@ -355,6 +403,7 @@ def api_unload():
     global current_file
     uabe_instance.__init__()
     current_file = None
+    _clear_session()
     _cleanup_old_files()
     return jsonify({'success': True})
 
